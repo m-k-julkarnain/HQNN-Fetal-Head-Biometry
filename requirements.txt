@@ -1,0 +1,8 @@
+torch
+torchvision
+pandas
+numpy
+pillow
+pennylane
+tqdm
+huggingface_hub
