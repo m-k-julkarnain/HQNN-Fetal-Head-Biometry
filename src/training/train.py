@@ -4,6 +4,7 @@ import random
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from huggingface_hub import HfApi
 
 from configs.experiment import (
     EXPERIMENT_NAME, IMAGE_SIZE, BATCH_SIZE, NUM_WORKERS, NUM_QUBITS,
@@ -34,7 +35,6 @@ def train_hqnn():
     
     set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using compute device: {device}")
     
     train_dataset = FetalHeadDataset(csv_file=HEAD_FP_TRAIN_CSV, image_dir=HEAD_FP_IMAGES, image_size=IMAGE_SIZE)
     val_dataset = FetalHeadDataset(csv_file=HEAD_FP_TEST_CSV, image_dir=HEAD_FP_IMAGES, image_size=IMAGE_SIZE)
@@ -59,10 +59,9 @@ def train_hqnn():
         train_loss = train_one_epoch(model=model, dataloader=train_loader, criterion=criterion, optimizer=optimizer, scheduler=scheduler, scaler=scaler, device=device)
         val_loss, predictions, metrics = validate(model=model, dataloader=val_loader, criterion=criterion, device=device)
         
-        current_lr = optimizer.param_groups[0]["lr"]
         print(f"Train Loss : {train_loss:.4f} | Val Loss : {val_loss:.4f} | Mean MAE : {metrics['mean_mae']:.4f} px")
         
-        epoch_record = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, **metrics, "learning_rate": current_lr}
+        epoch_record = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, **metrics}
         history.append(epoch_record)
         
         is_best = val_loss < (best_val_loss - MIN_DELTA)
@@ -77,6 +76,25 @@ def train_hqnn():
         if patience_counter >= EARLY_STOPPING_PATIENCE:
             print(f"\nEarly stopping triggered. No validation improvement for {EARLY_STOPPING_PATIENCE} epochs.")
             break
+
+    # AUTOMATIC HUGGING FACE UPLOAD AT END OF TRAINING
+    print("\n>>> Pushing best model checkpoint to Hugging Face...")
+    try:
+        from kaggle_secrets import UserSecretsClient
+        token = UserSecretsClient().get_secret("HF_TOKEN")
+        api = HfApi(token=token)
+        repo_id = "m-k-julkarnain/HQNN-Fetal-Head-Biometry"
+        
+        api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, private=True)
+        api.upload_file(
+            path_or_fileobj="outputs/checkpoints/best_model.pth",
+            path_in_repo="checkpoints/best_model.pth",
+            repo_id=repo_id,
+            repo_type="model"
+        )
+        print(f"Upload successful! Checkpoint secured in {repo_id}")
+    except Exception as e:
+        print(f"Hugging Face upload failed (Ensure HF_TOKEN is in Kaggle Secrets): {e}")
 
 if __name__ == "__main__":
     train_hqnn()
