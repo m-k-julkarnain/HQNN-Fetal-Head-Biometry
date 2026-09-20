@@ -4,10 +4,10 @@ import torch.nn as nn
 import torchvision.models as models
 
 class FetalCNNBackbone(nn.Module):
-    def __init__(self, n_qubits=8, pretrained=True):
+    def __init__(self, n_qubits=8):
         super().__init__()
-        weights = models.DenseNet121_Weights.DEFAULT if pretrained else None
-        densenet = models.densenet121(weights=weights)
+        # Strictly untrained to meet coursework constraints
+        densenet = models.densenet121(weights=None)
         
         self.features = densenet.features
         self.pool = nn.AdaptiveAvgPool2d((1, 1))

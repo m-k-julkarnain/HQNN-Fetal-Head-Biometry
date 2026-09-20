@@ -6,7 +6,7 @@ import torchvision.models as models
 class PureResNet50(nn.Module):
     def __init__(self):
         super().__init__()
-        resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        resnet = models.resnet50(weights=None)
         self.features = nn.Sequential(*list(resnet.children())[:-2])
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         
@@ -54,7 +54,7 @@ class PureResNet50(nn.Module):
 class PureDenseNet121(nn.Module):
     def __init__(self):
         super().__init__()
-        densenet = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
+        densenet = models.densenet121(weights=None)
         self.features = densenet.features
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         
