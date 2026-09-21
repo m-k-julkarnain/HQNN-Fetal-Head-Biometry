@@ -7,7 +7,8 @@ from src.quantum.pqc_layer import PQCLayer
 class FetalHeadHQNN(nn.Module):
     def __init__(self, n_qubits=8, n_layers=4):
         super().__init__()
-        self.cnn_backbone = FetalCNNBackbone(n_qubits=n_qubits, pretrained=True)
+        # FIX: Removed the 'pretrained' argument to match the untrained backbone
+        self.cnn_backbone = FetalCNNBackbone(n_qubits=n_qubits)
         self.pqc_layer = PQCLayer(n_qubits=n_qubits, n_layers=n_layers)
         
         # 1. Anatomical Structure Segmentation Decoder (Fetal Head Circumference)
