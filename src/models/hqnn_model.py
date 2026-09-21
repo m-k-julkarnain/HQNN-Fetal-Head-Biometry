@@ -1,17 +1,26 @@
-""" Hybrid Quantum-Classical Neural Network (HQNN) model architecture. """
+""" Hybrid Quantum-Classical Domain Adversarial Neural Network (HQ-DANN). """
 import torch
 import torch.nn as nn
+from torch.autograd import Function
 from src.models.cnn_backbone import FetalCNNBackbone
 from src.quantum.pqc_layer import PQCLayer
+
+class GradientReversalLayer(Function):
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.neg() * ctx.alpha, None
 
 class FetalHeadHQNN(nn.Module):
     def __init__(self, n_qubits=8, n_layers=4):
         super().__init__()
-        # FIX: Removed the 'pretrained' argument to match the untrained backbone
         self.cnn_backbone = FetalCNNBackbone(n_qubits=n_qubits)
         self.pqc_layer = PQCLayer(n_qubits=n_qubits, n_layers=n_layers)
         
-        # 1. Anatomical Structure Segmentation Decoder (Fetal Head Circumference)
         self.segmentation_decoder = nn.Sequential(
             nn.Linear(256 + n_qubits, 512 * 7 * 7),
             nn.ReLU(),
@@ -26,7 +35,6 @@ class FetalHeadHQNN(nn.Module):
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         )
         
-        # 2. Dual-Diameter Boundary Regression Head (8 coordinates: 4 BPD + 4 OFD)
         self.regression_head = nn.Sequential(
             nn.Linear(256 + n_qubits, 128),
             nn.ReLU(),
@@ -35,8 +43,17 @@ class FetalHeadHQNN(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 8)
         )
+        
+        # 3. Domain Discriminator (The DANN Upgrade)
+        # Forces the combined features to be hospital-agnostic
+        self.domain_classifier = nn.Sequential(
+            nn.Linear(256 + n_qubits, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 2) # Predicts Source Domain A vs Source Domain B
+        )
 
-    def forward(self, images):
+    def forward(self, images, alpha=1.0):
         classical_features, quantum_inputs = self.cnn_backbone(images)
         quantum_features = self.pqc_layer(quantum_inputs)
         
@@ -44,9 +61,12 @@ class FetalHeadHQNN(nn.Module):
         combined_features = torch.cat((classical_features, quantum_features), dim=1)
         
         oval_mask_logits = self.segmentation_decoder(combined_features)
-        coords_pred = self.regression_head(combined_features)
-        coords_pred = torch.clamp(coords_pred, min=-1.0, max=1.0)
+        coords_pred = torch.clamp(self.regression_head(combined_features), min=-1.0, max=1.0)
         
         if self.training:
-            return coords_pred, oval_mask_logits
-        return coords_pred
+            # Reverse gradients to penalize domain memorization
+            reversed_features = GradientReversalLayer.apply(combined_features, alpha)
+            domain_logits = self.domain_classifier(reversed_features)
+            return coords_pred, oval_mask_logits, domain_logits
+            
+        return coords_pred, oval_mask_logits
