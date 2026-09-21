@@ -18,20 +18,21 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scheduler=None, sca
         p = float(i) / len(dataloader)
         alpha = 2. / (1. + np.exp(-10 * p)) - 1
         
-        # Generate dummy domain labels (Half batch Domain 0, Half batch Domain 1)
-        # This forces the discriminator to actively balance the feature space
         batch_size = images.size(0)
         domain_labels = torch.cat([torch.zeros(batch_size // 2, dtype=torch.long), 
                                    torch.ones(batch_size - batch_size // 2, dtype=torch.long)]).to(device)
         
         with torch.amp.autocast(device_type=device_type, enabled=(device_type == "cuda")):
-            outputs = model(images, alpha)
-            if len(outputs) == 3: # HQ-DANN (Quantum)
+            # FIX: Check if the model has the DANN upgrade before passing alpha
+            if hasattr(model, 'domain_classifier'):
+                outputs = model(images, alpha)
                 coords_pred, mask_logits, domain_logits = outputs
                 biometry_loss = criterion((coords_pred, mask_logits), coords)
                 domain_loss = domain_criterion(domain_logits, domain_labels)
                 loss = biometry_loss + (0.1 * domain_loss)
-            else: # Classical Baseline
+            else: 
+                # Classical Baseline routing
+                outputs = model(images)
                 loss = criterion(outputs, coords)
             
         if scaler is not None and scaler.is_enabled():
