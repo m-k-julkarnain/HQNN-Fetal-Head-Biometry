@@ -1,4 +1,4 @@
-""" Affine-Equivariant Quantum Convolutional Neural Network (QCNN). """
+""" Quantum Convolutional Neural Network with Data Re-uploading. """
 import torch
 import torch.nn as nn
 import pennylane as qml
@@ -9,20 +9,17 @@ class PQCLayer(nn.Module):
         self.n_qubits = n_qubits
         self.dev = qml.device("default.qubit", wires=n_qubits)
         
-        # Dual-Head Classical-to-Quantum Bottleneck
         self.structure_head = nn.Linear(n_qubits, n_qubits)
         self.scale_head = nn.Sequential(
             nn.Linear(n_qubits, 1),
-            nn.Softplus() # Ensures scale scalar lambda is strictly positive
+            nn.Softplus()
         )
         
-        # QCNN Parameterization (Convolution and Pooling)
         self.weights_conv1 = nn.Parameter(torch.randn(4, 3) * 0.05)
         self.weights_pool1 = nn.Parameter(torch.randn(4, 3) * 0.05)
         self.weights_conv2 = nn.Parameter(torch.randn(2, 3) * 0.05)
         self.weights_pool2 = nn.Parameter(torch.randn(2, 3) * 0.05)
         
-        # Projects the 2 surviving QCNN measurements back to 8 dimensions
         self.out_proj = nn.Linear(2, n_qubits)
 
         @qml.qnode(self.dev, interface="torch", diff_method="backprop")
@@ -31,13 +28,12 @@ class PQCLayer(nn.Module):
             state[0] = 1.0 + 0.0j
             qml.StatePrep(state, wires=range(n_qubits))
             
-            # Affine-Equivariant Encoding
+            # Initial Data Encoding
             for i in range(n_qubits):
                 qml.RX(structure[i] * scale, wires=i)
                 qml.RY(structure[i] * scale, wires=i)
-                qml.RZ(structure[i] * scale, wires=i)
                 
-            # Level 1 Convolution & Pooling
+            # Level 1 Entanglement (Convolution & Pooling)
             for i, wire in enumerate([0, 2, 4, 6]):
                 qml.Rot(*w_c1[i], wires=wire)
                 qml.Rot(*w_c1[i], wires=wire+1)
@@ -45,7 +41,12 @@ class PQCLayer(nn.Module):
             for i, wire in enumerate([0, 2, 4, 6]):
                 qml.CRot(*w_p1[i], wires=[wire, wire+1])
                 
-            # Level 2 Convolution & Pooling
+            # DATA RE-UPLOADING: Re-inject classical features to boost non-linearity
+            for i in range(n_qubits):
+                qml.RZ(structure[i] * scale, wires=i)
+                qml.RX(structure[i] * scale, wires=i)
+                
+            # Level 2 Entanglement
             for i, pairs in enumerate([(1,3), (5,7)]):
                 qml.Rot(*w_c2[i], wires=pairs[0])
                 qml.Rot(*w_c2[i], wires=pairs[1])
@@ -67,6 +68,5 @@ class PQCLayer(nn.Module):
                   for b in range(batch_size)]
         q_out = torch.stack(q_out)
         
-        # Cast the 64-bit quantum tensor down to 16-bit to match AMP format
         q_out = q_out.type_as(x)
         return self.out_proj(q_out)
