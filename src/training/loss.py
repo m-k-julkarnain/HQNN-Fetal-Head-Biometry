@@ -1,4 +1,4 @@
-""" Order-Invariant Loss functions for Fetal Head Biometry HQNN. """
+""" Order-Invariant Pixel-Space Loss functions for Fetal Head Biometry HQNN. """
 import math
 import torch
 import torch.nn as nn
@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from configs.experiment import IMAGE_SIZE
 
 class WingLoss(nn.Module):
-    def __init__(self, w=0.05, epsilon=0.01):
+    def __init__(self, w=10.0, epsilon=2.0):
         super().__init__()
         self.w, self.epsilon = w, epsilon
         self.c = w - w * math.log(1.0 + w / epsilon)
@@ -17,37 +17,37 @@ class WingLoss(nn.Module):
         return loss
 
 class StructureAwareBiometryLoss(nn.Module):
-    def __init__(self, w=0.05, epsilon=0.01, mask_weight=0.4, boundary_weight=0.2, distal_weight=0.15):
+    def __init__(self, w=10.0, epsilon=2.0, mask_weight=0.5, boundary_weight=0.2, distal_weight=0.15):
         super().__init__()
         self.wing = WingLoss(w, epsilon)
-        self.alpha = 0.3
-        self.gamma = 0.15
+        self.alpha = 0.5
+        self.gamma = 0.2
         self.mask_weight = mask_weight
         self.bce_logits_loss = nn.BCEWithLogitsLoss()
 
     def compute_order_invariant_loss(self, p, t):
-        # 1. Coordinate Distance (Order Invariant)
-        # Straight match: p1->t1, p2->t2
-        loss_straight = self.wing(p, t).mean(dim=1)
-        # Flipped match: p1->t2, p2->t1
-        t_flipped = torch.cat([t[:, 2:4], t[:, 0:2]], dim=1)
-        loss_flipped = self.wing(p, t_flipped).mean(dim=1)
+        # Un-normalize from [-1, 1] to raw [0, 224] pixel space for aggressive gradients
+        p_px = ((p + 1.0) / 2.0) * float(IMAGE_SIZE)
+        t_px = ((t + 1.0) / 2.0) * float(IMAGE_SIZE)
         
-        # Network is only penalized for the best possible endpoint match
+        # 1. Coordinate Distance (Order Invariant)
+        loss_straight = self.wing(p_px, t_px).mean(dim=1)
+        t_flipped_px = torch.cat([t_px[:, 2:4], t_px[:, 0:2]], dim=1)
+        loss_flipped = self.wing(p_px, t_flipped_px).mean(dim=1)
         ep_loss = torch.minimum(loss_straight, loss_flipped)
         
-        # 2. Midpoint alignment (Naturally order invariant)
-        p_mid = torch.stack([(p[:, 0] + p[:, 2]) / 2.0, (p[:, 1] + p[:, 3]) / 2.0], dim=1)
-        t_mid = torch.stack([(t[:, 0] + t[:, 2]) / 2.0, (t[:, 1] + t[:, 3]) / 2.0], dim=1)
+        # 2. Pixel-Space Midpoint alignment
+        p_mid = torch.stack([(p_px[:, 0] + p_px[:, 2]) / 2.0, (p_px[:, 1] + p_px[:, 3]) / 2.0], dim=1)
+        t_mid = torch.stack([(t_px[:, 0] + t_px[:, 2]) / 2.0, (t_px[:, 1] + t_px[:, 3]) / 2.0], dim=1)
         mid_loss = self.wing(p_mid, t_mid).mean(dim=1)
         
-        # 3. Angle alignment (Absolute Cosine handles 180-degree flips)
+        # 3. Angle alignment
         p_vec = p[:, 2:4] - p[:, 0:2]
         t_vec = t[:, 2:4] - t[:, 0:2]
-        # torch.abs() ensures a 180-degree flip (cosine = -1) is treated as a perfect line match (1.0)
         angle_loss = 1.0 - torch.abs(F.cosine_similarity(p_vec, t_vec, dim=1))
         
-        return ep_loss + (self.alpha * mid_loss) + (self.gamma * angle_loss)
+        # Boost angle penalty by 50 to match the massive pixel-space magnitude
+        return ep_loss + (self.alpha * mid_loss) + (self.gamma * angle_loss * 50.0)
 
     def forward(self, model_outputs, targets):
         if isinstance(model_outputs, tuple):
@@ -81,7 +81,7 @@ class StructureAwareBiometryLoss(nn.Module):
                 target_mask[b, 0] = (dist_sq <= radius**2).float()
             
             mask_loss = self.bce_logits_loss(pred_mask, target_mask)
-            return biometry_loss + (self.mask_weight * mask_loss)
+            return biometry_loss + (self.mask_weight * mask_loss * 50.0)
             
         return biometry_loss
 
