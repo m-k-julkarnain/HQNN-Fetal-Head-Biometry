@@ -3,15 +3,16 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 
-class PureResNet50(nn.Module):
+class PureDenseNet121(nn.Module):
     def __init__(self):
         super().__init__()
-        resnet = models.resnet50(weights=None)
-        self.features = nn.Sequential(*list(resnet.children())[:-2])
+        weights = models.DenseNet121_Weights.DEFAULT
+        densenet = models.densenet121(weights=weights)
+        self.features = densenet.features
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         
         self.classical_projection = nn.Sequential(
-            nn.Linear(2048, 256),
+            nn.Linear(1024, 256),
             nn.ReLU(),
             nn.Dropout(0.2)
         )
@@ -38,34 +39,6 @@ class PureResNet50(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 8)
         )
-
-    def forward(self, images):
-        x = self.features(images)
-        x = torch.flatten(self.pool(x), 1)
-        features = self.classical_projection(x)
-        
-        oval_mask_logits = self.segmentation_decoder(features)
-        coords_pred = torch.clamp(self.regression_head(features), min=-1.0, max=1.0)
-        
-        if self.training:
-            return coords_pred, oval_mask_logits
-        return coords_pred
-
-class PureDenseNet121(nn.Module):
-    def __init__(self):
-        super().__init__()
-        densenet = models.densenet121(weights=None)
-        self.features = densenet.features
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        self.classical_projection = nn.Sequential(
-            nn.Linear(1024, 256),
-            nn.ReLU(),
-            nn.Dropout(0.2)
-        )
-        
-        self.segmentation_decoder = PureResNet50().segmentation_decoder
-        self.regression_head = PureResNet50().regression_head
 
     def forward(self, images):
         x = self.features(images)

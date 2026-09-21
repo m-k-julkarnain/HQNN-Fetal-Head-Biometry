@@ -12,13 +12,10 @@ class FetalHeadDataset(Dataset):
     def __init__(self, csv_file, image_dir, image_size=224):
         self.data = pd.read_csv(Path(csv_file))
         self.image_dir = Path(image_dir)
+        self.image_size = image_size
         self.is_train = 'train' in str(csv_file).lower()
-        self.transform = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ])
+        self.color_jitter = transforms.ColorJitter(brightness=0.3, contrast=0.3)
+        self.normalize = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
     def __len__(self):
         return len(self.data)
@@ -53,40 +50,44 @@ class FetalHeadDataset(Dataset):
             nx, ny = -dy / length, dx / length
             ofd_raw = [cx - nx * (length * 0.6), cy - ny * (length * 0.6), cx + nx * (length * 0.6), cy + ny * (length * 0.6)]
 
-        x1_b = (bpd_raw[0] / w) * 2.0 - 1.0
-        y1_b = (bpd_raw[1] / h) * 2.0 - 1.0
-        x2_b = (bpd_raw[2] / w) * 2.0 - 1.0
-        y2_b = (bpd_raw[3] / h) * 2.0 - 1.0
+        # Map to standard square resolution before rotation to preserve aspect ratio
+        pts = [
+            (bpd_raw[0] / w) * self.image_size, (bpd_raw[1] / h) * self.image_size,
+            (bpd_raw[2] / w) * self.image_size, (bpd_raw[3] / h) * self.image_size,
+            (ofd_raw[0] / w) * self.image_size, (ofd_raw[1] / h) * self.image_size,
+            (ofd_raw[2] / w) * self.image_size, (ofd_raw[3] / h) * self.image_size
+        ]
+        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
 
-        x1_o = (ofd_raw[0] / w) * 2.0 - 1.0
-        y1_o = (ofd_raw[1] / h) * 2.0 - 1.0
-        x2_o = (ofd_raw[2] / w) * 2.0 - 1.0
-        y2_o = (ofd_raw[3] / h) * 2.0 - 1.0
-
-        # Heavy Spatial Augmentation: Scale, Translation, and Rotation
-        if self.is_train and random.random() > 0.3:
-            angle_deg = random.uniform(-25, 25)
-            scale = random.uniform(0.85, 1.15)
-            tx_px = random.uniform(-0.1, 0.1) * w
-            ty_px = random.uniform(-0.1, 0.1) * h
+        # Synchronized rotation in pixel space around exact center
+        if self.is_train and random.random() > 0.4:
+            angle_deg = random.uniform(-20, 20)
+            image = TF.rotate(image, angle_deg)
             
-            image = TF.affine(image, angle=angle_deg, translate=(int(tx_px), int(ty_px)), scale=scale, shear=0)
+            # Counter-clockwise rotation matching TF.rotate in image coordinates
+            rad = math.radians(angle_deg)
+            cos_a, sin_a = math.cos(rad), math.sin(rad)
+            center = self.image_size / 2.0
             
-            a_rad = math.radians(angle_deg)
-            ca, sa = math.cos(a_rad), math.sin(a_rad)
-            
-            def affine_pt(x_norm, y_norm):
-                nx = (x_norm * ca + y_norm * sa) * scale
-                ny = (-x_norm * sa + y_norm * ca) * scale
-                nx += (tx_px / w) * 2.0
-                ny += (ty_px / h) * 2.0
-                return max(-1.0, min(1.0, nx)), max(-1.0, min(1.0, ny))
+            def rotate_px(px, py):
+                x = px - center
+                y = py - center
+                # Standard screen rotation matrix for TF.rotate
+                rx = x * cos_a - y * sin_a + center
+                ry = x * sin_a + y * cos_a + center
+                return max(0.0, min(float(self.image_size), rx)), max(0.0, min(float(self.image_size), ry))
                 
-            x1_b, y1_b = affine_pt(x1_b, y1_b)
-            x2_b, y2_b = affine_pt(x2_b, y2_b)
-            x1_o, y1_o = affine_pt(x1_o, y1_o)
-            x2_o, y2_o = affine_pt(x2_o, y2_o)
+            pts[0], pts[1] = rotate_px(pts[0], pts[1])
+            pts[2], pts[3] = rotate_px(pts[2], pts[3])
+            pts[4], pts[5] = rotate_px(pts[4], pts[5])
+            pts[6], pts[7] = rotate_px(pts[6], pts[7])
 
-        coords = torch.tensor([x1_b, y1_b, x2_b, y2_b, x1_o, y1_o, x2_o, y2_o], dtype=torch.float32)
+        # Normalize coordinates strictly to [-1, 1]
+        norm_coords = [(p / self.image_size) * 2.0 - 1.0 for p in pts]
+        coords = torch.tensor(norm_coords, dtype=torch.float32)
 
-        return self.transform(image), coords, image_id
+        # Apply photometrics and normalization
+        tensor_img = TF.to_tensor(self.color_jitter(image))
+        tensor_img = self.normalize(tensor_img)
+
+        return tensor_img, coords, image_id

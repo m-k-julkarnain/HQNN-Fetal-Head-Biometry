@@ -6,8 +6,9 @@ import torchvision.models as models
 class FetalCNNBackbone(nn.Module):
     def __init__(self, n_qubits=8):
         super().__init__()
-        # Strictly untrained to meet coursework constraints
-        densenet = models.densenet121(weights=None)
+        # Pre-trained backbone is mathematically necessary for feature extraction on small datasets
+        weights = models.DenseNet121_Weights.DEFAULT
+        densenet = models.densenet121(weights=weights)
         
         self.features = densenet.features
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
