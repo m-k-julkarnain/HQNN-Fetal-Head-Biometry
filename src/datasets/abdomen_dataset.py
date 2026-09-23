@@ -26,11 +26,23 @@ class FetalAbdomenDataset(Dataset):
         id_col = next((c for c in ['image_name', 'image_id', 'id_code', 'filename', 'ID'] if c in self.data.columns), None)
         image_id = str(row[id_col]) if id_col else str(row.iloc[0])
         
-        img_path = self.image_dir / (image_id if image_id.endswith(('.png','.jpg','.jpeg')) else f"{image_id}.jpg")
-        if not img_path.exists():
-            img_path = self.image_dir / f"{image_id}.png"
-        if not img_path.exists():
-            img_path = self.image_dir / f"{image_id}.jpeg"
+        # Clean up potential double extensions or trailing suffixes
+        base_name = image_id
+        for ext in ['.png', '.jpg', '.jpeg']:
+            if base_name.endswith(ext):
+                base_name = base_name[:-len(ext)]
+        
+        # Search for valid image file dynamically in the directory
+        img_path = None
+        for ext in ['.png', '.jpg', '.jpeg']:
+            candidate = self.image_dir / f"{base_name}{ext}"
+            if candidate.exists():
+                img_path = candidate
+                break
+                
+        if img_path is None or not img_path.exists():
+            # Fallback to direct string if exact match fails
+            img_path = self.image_dir / image_id
             
         image = Image.open(img_path).convert("RGB")
         w, h = image.size
@@ -43,7 +55,6 @@ class FetalAbdomenDataset(Dataset):
         tad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in tad_keys if k in c_map or k.upper() in c_map]
         apad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in apad_keys if k in c_map or k.upper() in c_map]
         
-        # Map to standard square resolution before rotation to preserve aspect ratio
         pts = [
             (tad_raw[0] / w) * self.image_size, (tad_raw[1] / h) * self.image_size,
             (tad_raw[2] / w) * self.image_size, (tad_raw[3] / h) * self.image_size,
@@ -53,7 +64,6 @@ class FetalAbdomenDataset(Dataset):
         
         image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         
-        # Synchronized rotation in pixel space around exact center
         if self.is_train and random.random() > 0.4:
             angle_deg = random.uniform(-20, 20)
             image = TF.rotate(image, angle_deg)
@@ -74,7 +84,6 @@ class FetalAbdomenDataset(Dataset):
             pts[4], pts[5] = rotate_px(pts[4], pts[5])
             pts[6], pts[7] = rotate_px(pts[6], pts[7])
             
-        # Normalize coordinates strictly to [-1, 1]
         norm_coords = [(p / self.image_size) * 2.0 - 1.0 for p in pts]
         coords = torch.tensor(norm_coords, dtype=torch.float32)
         
