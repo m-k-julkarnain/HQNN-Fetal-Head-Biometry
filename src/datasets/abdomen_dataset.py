@@ -26,22 +26,41 @@ class FetalAbdomenDataset(Dataset):
         id_col = next((c for c in ['image_name', 'image_id', 'id_code', 'filename', 'ID'] if c in self.data.columns), None)
         image_id = str(row[id_col]) if id_col else str(row.iloc[0])
         
-        # Clean up potential double extensions or trailing suffixes
         base_name = image_id
         for ext in ['.png', '.jpg', '.jpeg']:
             if base_name.endswith(ext):
                 base_name = base_name[:-len(ext)]
         
-        # Search for valid image file dynamically in the directory
+        # Robust search: check base image_dir, subdirectories, and standard dataset roots
         img_path = None
-        for ext in ['.png', '.jpg', '.jpeg']:
-            candidate = self.image_dir / f"{base_name}{ext}"
-            if candidate.exists():
-                img_path = candidate
-                break
-                
+        search_dirs = [
+            self.image_dir,
+            self.image_dir.parent,
+            self.image_dir.parent / "FP" / "Abdomen",
+            self.image_dir.parent / "UCL" / "Abdomen",
+            self.image_dir.parent / "MULTICENTRE" / "Abdomen",
+            self.image_dir / "Abdomen",
+        ]
+        
+        # Also try searching recursively if parent exists
+        root_images = self.image_dir.parent
+        if root_images.exists():
+            for found in root_images.rglob(f"{base_name}.*"):
+                if found.is_file() and found.suffix.lower() in ['.png', '.jpg', '.jpeg']:
+                    img_path = found
+                    break
+        
+        if img_path is None:
+            for d in search_dirs:
+                for ext in ['.png', '.jpg', '.jpeg']:
+                    candidate = d / f"{base_name}{ext}"
+                    if candidate.exists():
+                        img_path = candidate
+                        break
+                if img_path:
+                    break
+                    
         if img_path is None or not img_path.exists():
-            # Fallback to direct string if exact match fails
             img_path = self.image_dir / image_id
             
         image = Image.open(img_path).convert("RGB")
