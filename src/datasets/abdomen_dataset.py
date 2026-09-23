@@ -31,18 +31,8 @@ class FetalAbdomenDataset(Dataset):
             if base_name.endswith(ext):
                 base_name = base_name[:-len(ext)]
         
-        # Robust search: check base image_dir, subdirectories, and standard dataset roots
+        # Locate image file recursively across directories
         img_path = None
-        search_dirs = [
-            self.image_dir,
-            self.image_dir.parent,
-            self.image_dir.parent / "FP" / "Abdomen",
-            self.image_dir.parent / "UCL" / "Abdomen",
-            self.image_dir.parent / "MULTICENTRE" / "Abdomen",
-            self.image_dir / "Abdomen",
-        ]
-        
-        # Also try searching recursively if parent exists
         root_images = self.image_dir.parent
         if root_images.exists():
             for found in root_images.rglob(f"{base_name}.*"):
@@ -50,38 +40,55 @@ class FetalAbdomenDataset(Dataset):
                     img_path = found
                     break
         
-        if img_path is None:
-            for d in search_dirs:
+        if img_path is None or not img_path.exists():
+            for d in [self.image_dir, self.image_dir.parent, self.image_dir / "Abdomen"]:
                 for ext in ['.png', '.jpg', '.jpeg']:
                     candidate = d / f"{base_name}{ext}"
                     if candidate.exists():
                         img_path = candidate
                         break
-                if img_path:
-                    break
-                    
+                if img_path: break
+                
         if img_path is None or not img_path.exists():
             img_path = self.image_dir / image_id
             
         image = Image.open(img_path).convert("RGB")
-        w, h = image.size
-        c_map = {str(c).lower(): c for c in self.data.columns}
+        orig_w, orig_h = image.size
         
-        # Abdomen Keys: TAD and APAD
+        # Extract CSV cropping parameters
+        scale = float(row['scale']) if 'scale' in row else 1.0
+        c_w = float(row['center_w']) if 'center_w' in row else orig_w / 2.0
+        c_h = float(row['center_h']) if 'center_h' in row else orig_h / 2.0
+        
+        # Crop region calculation based on benchmark standard
+        crop_size = int(self.image_size * scale)
+        left = max(0, int(c_w - crop_size / 2))
+        top = max(0, int(c_h - crop_size / 2))
+        right = min(orig_w, left + crop_size)
+        bottom = min(orig_h, top + crop_size)
+        
+        image = image.crop((left, top, right, bottom))
+        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
+        
+        c_map = {str(c).lower(): c for c in self.data.columns}
         tad_keys = ['tad_1_x', 'tad_1_y', 'tad_2_x', 'tad_2_y']
         apad_keys = ['apad_1_x', 'apad_1_y', 'apad_2_x', 'apad_2_y']
         
-        tad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in tad_keys if k in c_map or k.upper() in c_map]
-        apad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in apad_keys if k in c_map or k.upper() in c_map]
+        tad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in tad_keys]
+        apad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in apad_keys]
         
+        # Transform raw coordinates into the cropped & resized coordinate space
+        def transform_pt(x, y):
+            cx = (x - left) * (self.image_size / (right - left)) if right > left else x
+            cy = (y - top) * (self.image_size / (bottom - top)) if bottom > top else y
+            return max(0.0, min(float(self.image_size), cx)), max(0.0, min(float(self.image_size), cy))
+            
         pts = [
-            (tad_raw[0] / w) * self.image_size, (tad_raw[1] / h) * self.image_size,
-            (tad_raw[2] / w) * self.image_size, (tad_raw[3] / h) * self.image_size,
-            (apad_raw[0] / w) * self.image_size, (apad_raw[1] / h) * self.image_size,
-            (apad_raw[2] / w) * self.image_size, (apad_raw[3] / h) * self.image_size
+            *transform_pt(tad_raw[0], tad_raw[1]),
+            *transform_pt(tad_raw[2], tad_raw[3]),
+            *transform_pt(apad_raw[0], apad_raw[1]),
+            *transform_pt(apad_raw[2], apad_raw[3])
         ]
-        
-        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         
         if self.is_train and random.random() > 0.4:
             angle_deg = random.uniform(-20, 20)
