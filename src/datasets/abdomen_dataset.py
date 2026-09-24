@@ -31,6 +31,7 @@ class FetalAbdomenDataset(Dataset):
             if base_name.endswith(ext):
                 base_name = base_name[:-len(ext)]
         
+        # Robust recursive image search
         img_path = None
         root_images = self.image_dir.parent
         if root_images.exists():
@@ -40,7 +41,7 @@ class FetalAbdomenDataset(Dataset):
                     break
         
         if img_path is None or not img_path.exists():
-            for d in [self.image_dir, self.image_dir.parent, self.image_dir / "Abdomen"]:
+            for d in [self.image_dir, self.image_dir.parent, self.image_dir / "Abdomen", self.image_dir / "FP" / "Abdomen", self.image_dir / "UCL" / "Abdomen"]:
                 for ext in ['.png', '.jpg', '.jpeg']:
                     candidate = d / f"{base_name}{ext}"
                     if candidate.exists():
@@ -54,12 +55,13 @@ class FetalAbdomenDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         orig_w, orig_h = image.size
         
-        # Use CSV scaling and center parameters if available, else fallback to standard resize
+        # Retrieve CSV affine cropping parameters
         scale = float(row['scale']) if 'scale' in row and not pd.isna(row['scale']) else 1.0
         c_w = float(row['center_w']) if 'center_w' in row and not pd.isna(row['center_w']) else orig_w / 2.0
         c_h = float(row['center_h']) if 'center_h' in row and not pd.isna(row['center_h']) else orig_h / 2.0
         
-        crop_size = int(self.image_size * scale * 0.85)
+        # Standard benchmark ROI crop formulation
+        crop_size = int(self.image_size * scale)
         left = max(0, int(c_w - crop_size / 2))
         top = max(0, int(c_h - crop_size / 2))
         right = min(orig_w, left + crop_size)
@@ -75,16 +77,17 @@ class FetalAbdomenDataset(Dataset):
         tad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in tad_keys]
         apad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in apad_keys]
         
-        def transform_pt(x, y):
-            cx = (x - left) * (self.image_size / (right - left)) if right > left else x
-            cy = (y - top) * (self.image_size / (bottom - top)) if bottom > top else y
-            return max(0.0, min(float(self.image_size), cx)), max(0.0, min(float(self.image_size), cy))
+        # Accurate affine mapping from original pixel space to cropped/resized 224x224 space
+        def project_pt(x, y):
+            px = (x - left) * (self.image_size / (right - left)) if right > left else (x / orig_w) * self.image_size
+            py = (y - top) * (self.image_size / (bottom - top)) if bottom > top else (y / orig_h) * self.image_size
+            return max(0.0, min(float(self.image_size), px)), max(0.0, min(float(self.image_size), py))
             
         pts = [
-            *transform_pt(tad_raw[0], tad_raw[1]),
-            *transform_pt(tad_raw[2], tad_raw[3]),
-            *transform_pt(apad_raw[0], apad_raw[1]),
-            *transform_pt(apad_raw[2], apad_raw[3])
+            *project_pt(tad_raw[0], tad_raw[1]),
+            *project_pt(tad_raw[2], tad_raw[3]),
+            *project_pt(apad_raw[0], apad_raw[1]),
+            *project_pt(apad_raw[2], apad_raw[3])
         ]
         
         if self.is_train and random.random() > 0.4:
@@ -107,6 +110,7 @@ class FetalAbdomenDataset(Dataset):
             pts[4], pts[5] = rotate_px(pts[4], pts[5])
             pts[6], pts[7] = rotate_px(pts[6], pts[7])
             
+        # Strict normalization to [-1, 1] for DSNT heatmap regression
         norm_coords = [(p / self.image_size) * 2.0 - 1.0 for p in pts]
         coords = torch.tensor(norm_coords, dtype=torch.float32)
         
