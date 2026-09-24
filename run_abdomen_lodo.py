@@ -1,4 +1,4 @@
-""" Master LODO Ablation Pipeline for Fetal Abdomen Biometry with SWA. """
+""" Fully Rewritten Master LODO Ablation Pipeline for Fetal Abdomen Biometry. """
 import os
 import random
 import argparse
@@ -20,7 +20,7 @@ from src.datasets.abdomen_dataset import FetalAbdomenDataset
 from src.models.classical_baselines import PureDenseNet121
 from src.models.hqnn_model import FetalHeadHQNN
 from src.training.loss import build_loss
-from src.training.optimizer import build_optimizer, build_scheduler
+from src.training.optimizer import build_optimizer
 from src.training.train_one_epoch import train_one_epoch
 from src.training.validate import validate
 
@@ -39,15 +39,20 @@ def create_concat_dataset(config_list):
     return ConcatDataset(datasets)
 
 def train_and_evaluate(model, model_name, run_name, train_loader, val_loader, device, hf_api, repo_id):
-    print(f"\n{'='*60}\nArchitecture: {model_name} | {run_name}\n{'='*60}")
+    print(f"\n{'='*60}\nArchitecture: {model_name} | {run_name} [Optimized Loss & Sched]\n{'='*60}")
     criterion = build_loss()
     optimizer = build_optimizer(model, learning_rate=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = build_scheduler(optimizer, epochs=EPOCHS, steps_per_epoch=len(train_loader))
+    
+    # Cosine Annealing Warm Restarts to escape plateau traps
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=15, T_mult=2, eta_min=1e-6
+    )
+    
     scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP) if device.type == 'cuda' else None
 
     swa_model = AveragedModel(model)
-    swa_start = int(EPOCHS * 0.75)
-    swa_scheduler = SWALR(optimizer, swa_lr=LEARNING_RATE * 0.1)
+    swa_start = int(EPOCHS * 0.70)
+    swa_scheduler = SWALR(optimizer, swa_lr=LEARNING_RATE * 0.05)
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -58,6 +63,7 @@ def train_and_evaluate(model, model_name, run_name, train_loader, val_loader, de
 
     for epoch in range(1, EPOCHS + 1):
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, scheduler, scaler, device)
+        scheduler.step()
 
         if epoch >= swa_start:
             swa_model.update_parameters(model)
@@ -76,7 +82,7 @@ def train_and_evaluate(model, model_name, run_name, train_loader, val_loader, de
             best_detailed_records = detailed_records
         else:
             patience_counter += 1
-            if patience_counter >= EARLY_STOPPING_PATIENCE and epoch < swa_start:
+            if patience_counter >= (EARLY_STOPPING_PATIENCE + 10) and epoch < swa_start:
                 print(f"Early stopping triggered at Epoch {epoch}.")
                 break
 

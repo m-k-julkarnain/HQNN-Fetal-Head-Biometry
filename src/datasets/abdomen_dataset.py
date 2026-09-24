@@ -54,7 +54,17 @@ class FetalAbdomenDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         orig_w, orig_h = image.size
         
-        # Resize directly to target model input size
+        scale = float(row['scale']) if 'scale' in row and not pd.isna(row['scale']) else 1.0
+        c_w = float(row['center_w']) if 'center_w' in row and not pd.isna(row['center_w']) else orig_w / 2.0
+        c_h = float(row['center_h']) if 'center_h' in row and not pd.isna(row['center_h']) else orig_h / 2.0
+        
+        crop_size = int(self.image_size * scale * 0.9)
+        left = max(0, int(c_w - crop_size / 2))
+        top = max(0, int(c_h - crop_size / 2))
+        right = min(orig_w, left + crop_size)
+        bottom = min(orig_h, top + crop_size)
+        
+        image = image.crop((left, top, right, bottom))
         image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         
         c_map = {str(c).lower(): c for c in self.data.columns}
@@ -64,16 +74,20 @@ class FetalAbdomenDataset(Dataset):
         tad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in tad_keys]
         apad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in apad_keys]
         
-        # Direct proportional mapping from original image space to [0, image_size]
+        def project_pt(x, y):
+            px = (x - left) * (self.image_size / (right - left)) if right > left else (x / orig_w) * self.image_size
+            py = (y - top) * (self.image_size / (bottom - top)) if bottom > top else (y / orig_h) * self.image_size
+            return max(0.0, min(float(self.image_size), px)), max(0.0, min(float(self.image_size), py))
+            
         pts = [
-            (tad_raw[0] / orig_w) * self.image_size, (tad_raw[1] / orig_h) * self.image_size,
-            (tad_raw[2] / orig_w) * self.image_size, (tad_raw[3] / orig_h) * self.image_size,
-            (apad_raw[0] / orig_w) * self.image_size, (apad_raw[1] / orig_h) * self.image_size,
-            (apad_raw[2] / orig_w) * self.image_size, (apad_raw[3] / orig_h) * self.image_size
+            *project_pt(tad_raw[0], tad_raw[1]),
+            *project_pt(tad_raw[2], tad_raw[3]),
+            *project_pt(apad_raw[0], apad_raw[1]),
+            *project_pt(apad_raw[2], apad_raw[3])
         ]
         
         if self.is_train and random.random() > 0.4:
-            angle_deg = random.uniform(-20, 20)
+            angle_deg = random.uniform(-15, 15)
             image = TF.rotate(image, angle_deg)
             
             rad = math.radians(angle_deg)
@@ -92,7 +106,6 @@ class FetalAbdomenDataset(Dataset):
             pts[4], pts[5] = rotate_px(pts[4], pts[5])
             pts[6], pts[7] = rotate_px(pts[6], pts[7])
             
-        # Precise normalization to [-1, 1] matching model output bounds
         norm_coords = [(p / self.image_size) * 2.0 - 1.0 for p in pts]
         coords = torch.tensor(norm_coords, dtype=torch.float32)
         
