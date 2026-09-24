@@ -31,7 +31,6 @@ class FetalAbdomenDataset(Dataset):
             if base_name.endswith(ext):
                 base_name = base_name[:-len(ext)]
         
-        # Locate image file
         img_path = None
         root_images = self.image_dir.parent
         if root_images.exists():
@@ -53,7 +52,21 @@ class FetalAbdomenDataset(Dataset):
             img_path = self.image_dir / image_id
             
         image = Image.open(img_path).convert("RGB")
-        w, h = image.size
+        orig_w, orig_h = image.size
+        
+        # Use CSV scaling and center parameters if available, else fallback to standard resize
+        scale = float(row['scale']) if 'scale' in row and not pd.isna(row['scale']) else 1.0
+        c_w = float(row['center_w']) if 'center_w' in row and not pd.isna(row['center_w']) else orig_w / 2.0
+        c_h = float(row['center_h']) if 'center_h' in row and not pd.isna(row['center_h']) else orig_h / 2.0
+        
+        crop_size = int(self.image_size * scale * 0.85)
+        left = max(0, int(c_w - crop_size / 2))
+        top = max(0, int(c_h - crop_size / 2))
+        right = min(orig_w, left + crop_size)
+        bottom = min(orig_h, top + crop_size)
+        
+        image = image.crop((left, top, right, bottom))
+        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         
         c_map = {str(c).lower(): c for c in self.data.columns}
         tad_keys = ['tad_1_x', 'tad_1_y', 'tad_2_x', 'tad_2_y']
@@ -62,15 +75,17 @@ class FetalAbdomenDataset(Dataset):
         tad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in tad_keys]
         apad_raw = [float(row[c_map.get(k, c_map.get(k.upper()))]) for k in apad_keys]
         
-        # Standard scaling to image_size (matching head biometry approach)
+        def transform_pt(x, y):
+            cx = (x - left) * (self.image_size / (right - left)) if right > left else x
+            cy = (y - top) * (self.image_size / (bottom - top)) if bottom > top else y
+            return max(0.0, min(float(self.image_size), cx)), max(0.0, min(float(self.image_size), cy))
+            
         pts = [
-            (tad_raw[0] / w) * self.image_size, (tad_raw[1] / h) * self.image_size,
-            (tad_raw[2] / w) * self.image_size, (tad_raw[3] / h) * self.image_size,
-            (apad_raw[0] / w) * self.image_size, (apad_raw[1] / h) * self.image_size,
-            (apad_raw[2] / w) * self.image_size, (apad_raw[3] / h) * self.image_size
+            *transform_pt(tad_raw[0], tad_raw[1]),
+            *transform_pt(tad_raw[2], tad_raw[3]),
+            *transform_pt(apad_raw[0], apad_raw[1]),
+            *transform_pt(apad_raw[2], apad_raw[3])
         ]
-        
-        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         
         if self.is_train and random.random() > 0.4:
             angle_deg = random.uniform(-20, 20)
@@ -92,7 +107,6 @@ class FetalAbdomenDataset(Dataset):
             pts[4], pts[5] = rotate_px(pts[4], pts[5])
             pts[6], pts[7] = rotate_px(pts[6], pts[7])
             
-        # Normalize coordinates strictly to [-1, 1] for DSNT regression
         norm_coords = [(p / self.image_size) * 2.0 - 1.0 for p in pts]
         coords = torch.tensor(norm_coords, dtype=torch.float32)
         
