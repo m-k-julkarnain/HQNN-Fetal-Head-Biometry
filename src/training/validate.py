@@ -1,4 +1,4 @@
-""" Validation script with Order-Aligned Test-Time Augmentation (TTA). """
+""" Fully Rewritten Generic Validation Script with Order-Aligned Test-Time Augmentation (TTA). """
 import torch
 import numpy as np
 from tqdm.auto import tqdm
@@ -22,32 +22,30 @@ def validate(model, dataloader, criterion, device):
             outputs_2 = model(images_hf)
             preds_2 = outputs_2[0] if isinstance(outputs_2, tuple) else outputs_2
             
-            # Mathematically unflip coordinates (Invert X)
+            # Mathematically unflip coordinates (Invert X in [-1, 1] space)
             preds_2_unflipped = preds_2.clone()
             preds_2_unflipped[:, 0::2] = -preds_2[:, 0::2]
             
-            # TTA Order Alignment: Because our loss is order-invariant, the model might swap endpoints on flipped images!
-            # We measure distance to ensure we average Left with Left, not Left with Right.
+            # TTA Order Alignment for independent biometry pairs (Diameters 1 and 2)
+            # Diameter 1 (Points 0 & 1 -> indices 0:4)
+            p1_d1, p2_d1 = preds_1[:, :4], preds_2_unflipped[:, :4]
+            dist_straight = torch.norm(p1_d1 - p2_d1, dim=1)
+            p2_d1_swapped = torch.cat([p2_d1[:, 2:4], p2_d1[:, 0:2]], dim=1)
+            dist_cross = torch.norm(p1_d1 - p2_d1_swapped, dim=1)
+            p2_d1_aligned = torch.where((dist_cross < dist_straight).unsqueeze(1), p2_d1_swapped, p2_d1)
             
-            # BPD Alignment
-            p1_bpd, p2_bpd = preds_1[:, :4], preds_2_unflipped[:, :4]
-            dist_straight = torch.norm(p1_bpd - p2_bpd, dim=1)
-            p2_bpd_swapped = torch.cat([p2_bpd[:, 2:4], p2_bpd[:, 0:2]], dim=1)
-            dist_cross = torch.norm(p1_bpd - p2_bpd_swapped, dim=1)
-            p2_bpd_aligned = torch.where((dist_cross < dist_straight).unsqueeze(1), p2_bpd_swapped, p2_bpd)
-            
-            # OFD Alignment
-            p1_ofd, p2_ofd = preds_1[:, 4:], preds_2_unflipped[:, 4:]
-            dist_straight_o = torch.norm(p1_ofd - p2_ofd, dim=1)
-            p2_ofd_swapped = torch.cat([p2_ofd[:, 2:4], p2_ofd[:, 0:2]], dim=1)
-            dist_cross_o = torch.norm(p1_ofd - p2_ofd_swapped, dim=1)
-            p2_ofd_aligned = torch.where((dist_cross_o < dist_straight_o).unsqueeze(1), p2_ofd_swapped, p2_ofd)
+            # Diameter 2 (Points 2 & 3 -> indices 4:8)
+            p1_d2, p2_d2 = preds_1[:, 4:], preds_2_unflipped[:, 4:]
+            dist_straight_2 = torch.norm(p1_d2 - p2_d2, dim=1)
+            p2_d2_swapped = torch.cat([p2_d2[:, 2:4], p2_d2[:, 0:2]], dim=1)
+            dist_cross_2 = torch.norm(p1_d2 - p2_d2_swapped, dim=1)
+            p2_d2_aligned = torch.where((dist_cross_2 < dist_straight_2).unsqueeze(1), p2_d2_swapped, p2_d2)
             
             # Average the Order-Aligned TTA predictions
-            preds_2_aligned = torch.cat([p2_bpd_aligned, p2_ofd_aligned], dim=1)
+            preds_2_aligned = torch.cat([p2_d1_aligned, p2_d2_aligned], dim=1)
             preds = (preds_1 + preds_2_aligned) / 2.0
             
-            # Compute Loss (pass only tuple format to criterion)
+            # Compute Loss
             loss_val = criterion((preds, outputs_1[1]), coords) if isinstance(outputs_1, tuple) else criterion(preds, coords)
             running_loss += loss_val.item()
             
@@ -55,28 +53,31 @@ def validate(model, dataloader, criterion, device):
             targets_list.extend(coords.cpu().numpy().tolist())
             image_ids_list.extend(image_ids)
             
+    # Denormalize from [-1, 1] to pixel space [0, IMAGE_SIZE]
     preds_arr = ((np.array(preds_list) + 1.0) / 2.0) * IMAGE_SIZE
     targets_arr = ((np.array(targets_list) + 1.0) / 2.0) * IMAGE_SIZE
     
-    mae_bpd_straight = np.mean(np.abs(preds_arr[:, :4] - targets_arr[:, :4]), axis=1)
-    targets_bpd_flipped = np.concatenate([targets_arr[:, 2:4], targets_arr[:, 0:2]], axis=1)
-    mae_bpd_flipped = np.mean(np.abs(preds_arr[:, :4] - targets_bpd_flipped), axis=1)
-    mae_bpd = np.minimum(mae_bpd_straight, mae_bpd_flipped)
+    # Diameter 1 Error (e.g. TAD / BPD)
+    mae_d1_straight = np.mean(np.abs(preds_arr[:, :4] - targets_arr[:, :4]), axis=1)
+    targets_d1_flipped = np.concatenate([targets_arr[:, 2:4], targets_arr[:, 0:2]], axis=1)
+    mae_d1_flipped = np.mean(np.abs(preds_arr[:, :4] - targets_d1_flipped), axis=1)
+    mae_d1 = np.minimum(mae_d1_straight, mae_d1_flipped)
     
-    mae_ofd_straight = np.mean(np.abs(preds_arr[:, 4:] - targets_arr[:, 4:]), axis=1)
-    targets_ofd_flipped = np.concatenate([targets_arr[:, 6:8], targets_arr[:, 4:6]], axis=1)
-    mae_ofd_flipped = np.mean(np.abs(preds_arr[:, 4:] - targets_ofd_flipped), axis=1)
-    mae_ofd = np.minimum(mae_ofd_straight, mae_ofd_flipped)
+    # Diameter 2 Error (e.g. APAD / OFD)
+    mae_d2_straight = np.mean(np.abs(preds_arr[:, 4:] - targets_arr[:, 4:]), axis=1)
+    targets_d2_flipped = np.concatenate([targets_arr[:, 6:8], targets_arr[:, 4:6]], axis=1)
+    mae_d2_flipped = np.mean(np.abs(preds_arr[:, 4:] - targets_d2_flipped), axis=1)
+    mae_d2 = np.minimum(mae_d2_straight, mae_d2_flipped)
     
-    true_mae_per_image = (mae_bpd + mae_ofd) / 2.0
+    true_mae_per_image = (mae_d1 + mae_d2) / 2.0
     mean_mae = np.mean(true_mae_per_image)
     
     detailed_records = []
     for i in range(len(image_ids_list)):
         detailed_records.append({
             "Patient_ID": image_ids_list[i],
-            "BPD_Error_px": round(float(mae_bpd[i]), 4),
-            "OFD_Error_px": round(float(mae_ofd[i]), 4),
+            "Diameter1_Error_px": round(float(mae_d1[i]), 4),
+            "Diameter2_Error_px": round(float(mae_d2[i]), 4),
             "Total_MAE_px": round(float(true_mae_per_image[i]), 4)
         })
         
