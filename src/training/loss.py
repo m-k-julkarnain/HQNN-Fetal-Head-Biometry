@@ -102,28 +102,28 @@ class FetalBiometryLoss(nn.Module):
 
     def forward(self, pred_coords, true_coords):
         """
-        pred_coords, true_coords: Tensor of shape [Batch, 8] 
-        representing 4 points (8 coordinates: TAD_1, TAD_2, APAD_1, APAD_2)
+        Handles both tensor and tuple model outputs.
+        pred_coords: Tensor or Tuple containing coordinate predictions.
+        true_coords: Tensor of shape [Batch, 8]
         """
+        if isinstance(pred_coords, tuple):
+            pred_coords = pred_coords[0]
+            
         # 1. Base regression loss
         reg_loss = self.smooth_l1(pred_coords, true_coords)
         
         # 2. Geometric Euclidean distance penalty across individual landmark pairs
-        # Reshape to [Batch, 4, 2] -> 4 points per sample
         pred_pts = pred_coords.view(-1, 4, 2)
         true_pts = true_coords.view(-1, 4, 2)
         
-        # Calculate pairwise Euclidean distances between predicted and true coordinates
         euclidean_dists = torch.sqrt(torch.sum((pred_pts - true_pts) ** 2, dim=-1) + 1e-6)
         dist_loss = torch.mean(euclidean_dists)
         
         # 3. Diameter structural length consistency penalty (TAD and APAD lengths)
-        # TAD length: distance between point 0 and point 1
         pred_tad_len = torch.sqrt(torch.sum((pred_pts[:, 0, :] - pred_pts[:, 1, :]) ** 2, dim=-1) + 1e-6)
         true_tad_len = torch.sqrt(torch.sum((true_pts[:, 0, :] - true_pts[:, 1, :]) ** 2, dim=-1) + 1e-6)
         tad_len_loss = torch.mean(torch.abs(pred_tad_len - true_tad_len))
         
-        # APAD length: distance between point 2 and point 3
         pred_apad_len = torch.sqrt(torch.sum((pred_pts[:, 2, :] - pred_pts[:, 3, :]) ** 2, dim=-1) + 1e-6)
         true_apad_len = torch.sqrt(torch.sum((true_pts[:, 2, :] - true_pts[:, 3, :]) ** 2, dim=-1) + 1e-6)
         apad_len_loss = torch.mean(torch.abs(pred_apad_len - true_apad_len))
