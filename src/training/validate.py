@@ -1,10 +1,10 @@
-""" Fully Rewritten Generic Validation Script with Order-Aligned Test-Time Augmentation (TTA). """
+""" Generic Validation Script with Order-Aligned Test-Time Augmentation (TTA) and Task Routing. """
 import torch
 import numpy as np
 from tqdm.auto import tqdm
 from configs.experiment import IMAGE_SIZE
 
-def validate(model, dataloader, criterion, device):
+def validate(model, dataloader, criterion, device, task='abdomen'):
     model.eval()
     running_loss = 0.0
     preds_list, targets_list, image_ids_list = [], [], []
@@ -13,28 +13,26 @@ def validate(model, dataloader, criterion, device):
         for images, coords, image_ids in tqdm(dataloader, desc="Validation", leave=False):
             images, coords = images.to(device), coords.to(device)
             
-            # Pass 1: Normal Image
-            outputs_1 = model(images)
+            # Pass 1: Normal Image (Routed to specific task head)
+            outputs_1 = model(images, task=task)
             preds_1 = outputs_1[0] if isinstance(outputs_1, tuple) else outputs_1
             
             # Pass 2: TTA Horizontal Flip
             images_hf = torch.flip(images, dims=[3])
-            outputs_2 = model(images_hf)
+            outputs_2 = model(images_hf, task=task)
             preds_2 = outputs_2[0] if isinstance(outputs_2, tuple) else outputs_2
             
             # Mathematically unflip coordinates (Invert X in [-1, 1] space)
             preds_2_unflipped = preds_2.clone()
             preds_2_unflipped[:, 0::2] = -preds_2[:, 0::2]
             
-            # TTA Order Alignment for independent biometry pairs (Diameters 1 and 2)
-            # Diameter 1 (Points 0 & 1 -> indices 0:4)
+            # TTA Order Alignment for independent biometry pairs
             p1_d1, p2_d1 = preds_1[:, :4], preds_2_unflipped[:, :4]
             dist_straight = torch.norm(p1_d1 - p2_d1, dim=1)
             p2_d1_swapped = torch.cat([p2_d1[:, 2:4], p2_d1[:, 0:2]], dim=1)
             dist_cross = torch.norm(p1_d1 - p2_d1_swapped, dim=1)
             p2_d1_aligned = torch.where((dist_cross < dist_straight).unsqueeze(1), p2_d1_swapped, p2_d1)
             
-            # Diameter 2 (Points 2 & 3 -> indices 4:8)
             p1_d2, p2_d2 = preds_1[:, 4:], preds_2_unflipped[:, 4:]
             dist_straight_2 = torch.norm(p1_d2 - p2_d2, dim=1)
             p2_d2_swapped = torch.cat([p2_d2[:, 2:4], p2_d2[:, 0:2]], dim=1)
@@ -45,8 +43,12 @@ def validate(model, dataloader, criterion, device):
             preds_2_aligned = torch.cat([p2_d1_aligned, p2_d2_aligned], dim=1)
             preds = (preds_1 + preds_2_aligned) / 2.0
             
-            # Compute Loss
-            loss_val = criterion((preds, outputs_1[1]), coords) if isinstance(outputs_1, tuple) else criterion(preds, coords)
+            # Compute Loss with task routing
+            if isinstance(outputs_1, tuple):
+                loss_val = criterion((preds, outputs_1[1]), coords, task=task)
+            else:
+                loss_val = criterion(preds, coords, task=task)
+                
             running_loss += loss_val.item()
             
             preds_list.extend(preds.cpu().numpy().tolist())
