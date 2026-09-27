@@ -1,14 +1,12 @@
-import torch
 import torch.nn as nn
-from src.models.cnn_backbone import build_densenet_backbone
+from src.models.cnn_backbone import FetalCNNBackbone
 from src.quantum.pqc_layer import HybridPQC
 
 class MultiTaskHQNN(nn.Module):
     def __init__(self, n_qubits=4, n_layers=2, pretrained=True):
         super(MultiTaskHQNN, self).__init__()
-        # Shared Classical Trunk
-        self.backbone, num_features = build_densenet_backbone(pretrained=pretrained)
-        self.reduce_dim = nn.Linear(num_features, n_qubits)
+        # Use your custom CBAM backbone
+        self.backbone = FetalCNNBackbone(n_qubits=n_qubits)
         
         # Shared Quantum PQC Layer
         self.quantum_layer = HybridPQC(n_qubits=n_qubits, n_layers=n_layers)
@@ -26,11 +24,11 @@ class MultiTaskHQNN(nn.Module):
         self.femur_decoder = nn.Linear(64, 4)    # 2 endpoints (FL)
 
     def forward(self, x, task='abdomen'):
-        features = self.backbone(x)
-        q_in = self.reduce_dim(features)
+        # Extract features using your CBAM implementation
+        _, quantum_inputs = self.backbone(x)
         
         # Pass through the shared Quantum Circuit
-        q_out = self.quantum_layer(q_in)
+        q_out = self.quantum_layer(quantum_inputs)
         latent = self.post_q_fc(q_out)
         
         # Route to the specific anatomy head
